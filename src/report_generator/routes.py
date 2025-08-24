@@ -36,7 +36,6 @@ async def trigger_report(session:AsyncSession=Depends(get_session)):
             }
         )
         # trigger report generation background task 
-        print("Task is sent to celery")
         trigger_report_task.delay(
             report_id=str(report_id),
             NOW_UTC=end_time.isoformat()  # ISO format is best for datetime

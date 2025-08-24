@@ -67,11 +67,9 @@ class ReportGeneratorService:
     async def get_store_business_hours(store_id: UUID, session: AsyncSession):
         try:
             store_business_hrs = await session.exec(select(StoreBusinessHours).where(StoreBusinessHours.store_id == store_id))
-            # Fetch all results and return them
             all_business_hours = store_business_hrs.all()
             return all_business_hours
         except Exception as e:
-            # Assuming global_logger.log_event is awaitable if needed
             await global_logger.log_event(
                 data={
                     "message": "error_occurred_fetching_business_hrs",
@@ -118,7 +116,6 @@ class ReportGeneratorService:
                 return pd.DataFrame([]) 
             obs_data=[result.model_dump(exclude=["store_id","uid"]) for result in results]
             obs_df = pd.DataFrame(obs_data)
-            # Parse timestamps to timezone-aware UTC datetimes
             obs_df["timestamp_utc"] = pd.to_datetime(obs_df["timestamp_utc"], utc=True)
             obs_df = obs_df.sort_values("timestamp_utc").reset_index(drop=True)
             return obs_df
@@ -145,19 +142,16 @@ class ReportGeneratorService:
             store_result = await session.exec(statement)
             store = store_result.first()
             if not store:
-                return None, None, None # Store not found
+                return None, None, None 
             
             timezone_str={"timezone":store.timezone.timezone} if store.timezone.timezone else {"timezone":"America/Chicago"}
-            # Get business hours and fill in missing days
             business_hours = store.business_hours or []
             bh_map = {bh.dayOfWeek for bh in business_hours}
             all_days = set(range(7))
             missing_days = list(all_days - bh_map)
 
             for day in missing_days:
-                # Create default business hour for missing day (00:00 to 23:59:59)
-                # Note: This assumes the StoreBusinessHours model can be instantiated directly.
-                # If it requires a store_id, you'd need to handle that.
+                #setting day timeline to default (00:00 to 23:59)
                 default_bh = StoreBusinessHours(
                     store_id=store_id,
                     dayOfWeek=day,
@@ -166,7 +160,6 @@ class ReportGeneratorService:
                 )
                 business_hours.append(default_bh)
 
-            # Sort business hours by day of week and start time for consistency
             business_hours.sort(key=lambda bh: (bh.dayOfWeek, bh.start_time_local))
 
             business_hours_dict=[
@@ -185,8 +178,7 @@ class ReportGeneratorService:
                 },
                 level="error"
             )
-            print(f"Error fetching store details: {e}") # Using print for demonstration
-            raise # Re-raise the exception after logging
+            raise
         
     @staticmethod    
     def build_status_intervals(observations: pd.DataFrame, now_utc: pd.Timestamp):
@@ -195,23 +187,21 @@ class ReportGeneratorService:
         [t_i, t_{i+1}) with status_i, and last [t_last, now_utc].
         Returns a list of dicts with 'start', 'end', 'status' (UTC tz-aware).
         """
-        obs = observations.sort_values("timestamp_utc").reset_index(drop=True)
-        if obs.empty:
+        obs_df = observations.sort_values("timestamp_utc").reset_index(drop=True)
+        if obs_df.empty:
             return []
         intervals = []
-        for i in range(len(obs) - 1):
-            start = obs.loc[i, "timestamp_utc"]
-            end = obs.loc[i + 1, "timestamp_utc"]
-            status = obs.loc[i, "status"]
-            # Skip zero-length intervals (duplicate timestamps)
+        for i in range(len(obs_df) - 1):
+            start = obs_df.loc[i, "timestamp_utc"]
+            end = obs_df.loc[i + 1, "timestamp_utc"]
+            status = obs_df.loc[i, "status"]
             if end > start:
                 intervals.append({"start": start, "end": end, "status": status})
         # Last open interval closes at now_utc
-        last_start = obs.loc[len(obs) - 1, "timestamp_utc"]
+        last_start = obs_df.loc[len(obs_df) - 1, "timestamp_utc"]
         if now_utc > last_start:
-            intervals.append({"start": last_start, "end": now_utc, "status": obs.loc[len(obs) - 1, "status"]})
+            intervals.append({"start": last_start, "end": now_utc, "status": obs_df.loc[len(obs_df) - 1, "status"]})
         elif now_utc == last_start:
-            # Degenerate "instant" — we can still count it when window includes this point, but as 0 duration.
             pass
         return intervals
     
@@ -222,42 +212,38 @@ class ReportGeneratorService:
             yield start_date + timedelta(days=n)
 
     @staticmethod
-    def build_bh_intervals_utc(bh_df: pd.DataFrame, tz: ZoneInfo, start_utc: pd.Timestamp, end_utc: pd.Timestamp):
+    def build_bh_intervals_utc(business_hrs_df: pd.DataFrame, tz: ZoneInfo, start_utc: pd.Timestamp, end_utc: pd.Timestamp):
         """
         Expand business hours to UTC intervals covering [start_utc, end_utc].
         Handles overnight (end <= start → rolls to next local day).
         Returns list of (bh_start_utc, bh_end_utc).
         """
-        # Map dayOfWeek -> rows (could be multiple intervals per day)
         bh_map = {}
-        for _, row in bh_df.iterrows():
+        for _, row in business_hrs_df.iterrows():
             bh_map.setdefault(int(row["dayOfWeek"]), []).append((row["start_time_local"], row["end_time_local"]))
 
-        # We iterate across LOCAL dates that cover the UTC window.
         start_local = start_utc.astimezone(tz)
         end_local = end_utc.astimezone(tz)
         local_start_date = start_local.date()
         local_end_date = end_local.date()
         intervals = []
         for d in ReportGeneratorService.daterange(local_start_date, local_end_date):
-            dow = (d.weekday())  # Monday=0
+            dow = (d.weekday())
             if dow not in bh_map:
-                continue  # closed
+                continue
             for st_local_t, en_local_t in bh_map[dow]:
                 st_local_dt = datetime.combine(d, st_local_t, tzinfo=tz)
                 en_local_dt = datetime.combine(d, en_local_t, tzinfo=tz)
                 if en_local_dt <= st_local_dt:
                     # Overnight case: end on next day
                     en_local_dt = en_local_dt + timedelta(days=1)
-                # Convert to UTC
                 st_utc = st_local_dt.astimezone(ZoneInfo("UTC"))
                 en_utc = en_local_dt.astimezone(ZoneInfo("UTC"))
-                # Clip to requested window
+                # adjusting to requested window
                 st = max(st_utc, start_utc)
                 en = min(en_utc, end_utc)
                 if en > st:
                     intervals.append((st, en))
-        # Sort intervals
         intervals.sort(key=lambda x: x[0])
         return intervals
     
@@ -285,30 +271,27 @@ class ReportGeneratorService:
             window_start = now_utc - window_td
             window_end = now_utc
 
-            # Build status intervals
             obs = observations.sort_values("timestamp_utc").reset_index(drop=True)
             if obs.empty:
                 return 0.0, 0.0
 
             intervals = ReportGeneratorService.build_status_intervals(obs, now_utc)
-            # If window starts before the first observation, add a back-fill interval
             first_obs_time = obs.loc[0, "timestamp_utc"]
             if window_start < first_obs_time:
-                # Back-fill status from the first obs (per policy)
+                # Back-fill status from the first as per our policy
                 first_status = obs.loc[0, "status"]
                 bf_end = min(first_obs_time, window_end)
                 if bf_end > window_start:
                     intervals = [{"start": window_start, "end": bf_end, "status": first_status}] + intervals
 
-            # Build BH intervals in UTC for this window
+            # Building BH intervals in UTC for this window(window_Start,window_End)
             bh_intervals = ReportGeneratorService.build_bh_intervals_utc(bh_df, tz, window_start, window_end)
             # print(pd.DataFrame(bh_intervals))
             # Intersect status intervals with BH intervals
             uptime = 0.0
             downtime = 0.0
-            i = 0  # pointer over status intervals
+            i = 0 
             for bh_start, bh_end in bh_intervals:
-                # Advance i to the first status interval that could overlap
                 while i < len(intervals) and intervals[i]["end"] <= bh_start:
                     i += 1
                 j = i
@@ -322,7 +305,6 @@ class ReportGeneratorService:
                         else:
                             downtime += dur
                     j += 1
-            # print(uptime,downtime)
             return uptime, downtime
         except Exception as e:
             print(e)
@@ -336,7 +318,6 @@ class ReportGeneratorService:
         """
         total = uptime_sec + downtime_sec
         if total == 0:
-            # No BH coverage or no observations → return zeros cleanly
             if units == "minutes":
                 return 0, 0
             else:
@@ -383,7 +364,6 @@ class ReportGeneratorService:
             uptime_last_day_hr,  downtime_last_day_hr  = ReportGeneratorService.summarize_results(ud, dd, last_day_td,  units="hours")
             uptime_last_week_hr, downtime_last_week_hr = ReportGeneratorService.summarize_results(uw, dw, last_week_td, units="hours")
 
-            # Show results as a small DataFrame
             results={
                 "store_id": store_id,
                 "uptime_last_hour_min": uptime_last_hour_min,
@@ -429,7 +409,7 @@ class ReportGeneratorService:
                 
                 end_time=t.time()
                 print(f"Total Time taken to generate a report is {end_time-start_time}")
-                # once the task is done 
+                # once the task is done set key to completed
                 await set_key({
                     str(report_id):"completed"
                 })
