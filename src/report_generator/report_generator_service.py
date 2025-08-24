@@ -17,6 +17,15 @@ result_path=Path(__file__).parent.parent.parent/"result_data"
 class ReportGeneratorService:
     
     async def get_store(self,store_id: UUID, session: AsyncSession):
+        """
+            It Fetches Individual Store from Stores Table
+        Args:
+            store_id (UUID): _description_
+            session (AsyncSession): _description_
+
+        Returns:
+            _type_: Store
+        """
         try:
             store_result = await session.exec(select(Stores).where(Stores.store_id == store_id))
             return store_result.first()
@@ -33,6 +42,15 @@ class ReportGeneratorService:
         
     @staticmethod
     def get_defaults(store_id: UUID):
+        """
+            This is an Utility function to get default config for Store_id
+            like timezone , business_hrs(24*7)
+        Args:
+            store_id (UUID): _description_
+
+        Returns:
+            _type_: Dict[Store],Dict[TimeZone],Dict[BusinessHrs]
+        """
         store_dict = {
             "store_id": store_id
         }
@@ -50,6 +68,14 @@ class ReportGeneratorService:
     
     @staticmethod
     async def get_all_stores(session: AsyncSession):
+        """
+            Gets All Stores from Stores Table
+        Args:
+            session (AsyncSession): _description_
+
+        Returns:
+            _type_: List[Store]
+        """
         try:
             stores_result = await session.exec(select(Stores))
             return stores_result.all()
@@ -65,6 +91,16 @@ class ReportGeneratorService:
     
     @staticmethod
     async def get_store_business_hours(store_id: UUID, session: AsyncSession):
+        """
+        Takes in store_id and fetches Business_hrs from respective StoreBusinessHours
+        table
+        Args:
+            store_id (UUID): _description_
+            session (AsyncSession): _description_
+
+        Returns:
+            _type_: List[BusinessHours]
+        """
         try:
             store_business_hrs = await session.exec(select(StoreBusinessHours).where(StoreBusinessHours.store_id == store_id))
             all_business_hours = store_business_hrs.all()
@@ -82,6 +118,17 @@ class ReportGeneratorService:
     
     
     async def get_store_updates_within_range(self,start_time: datetime, end_time: datetime, store_id: UUID, session: AsyncSession):
+        """
+            Takes in time interval and get store status records from DB
+        Args:
+            start_time (datetime): _description_
+            end_time (datetime): _description_
+            store_id (UUID): _description_
+            session (AsyncSession): _description_
+
+        Returns:
+            _type_: List[StoreUpdates]
+        """
         try:
             updates_result = await session.exec(
                 select(StoreUpdates)
@@ -109,6 +156,17 @@ class ReportGeneratorService:
             raise    
     
     async def get_range_status(self,store_id:UUID,end_time:datetime,session:AsyncSession):
+        """
+            Takes in store_id,end_time 
+            Get status records of store for last 1 weeks
+        Args:
+            store_id (UUID): _description_
+            end_time (datetime): _description_
+            session (AsyncSession): _description_
+
+        Returns:
+            _type_: DataFrame of Store Updates Records 
+        """
         try:
             start_time=end_time-timedelta(weeks=1)
             results=await self.get_store_updates_within_range(start_time=start_time,end_time=end_time,store_id=store_id,session=session)
@@ -127,8 +185,8 @@ class ReportGeneratorService:
         Retrieves store details including timezone and business hours.
 
         Args:
-            store_id: The UUID of the store.
-            session: The SQLAlchemy async session.
+            store_id (UUID): _description_
+            session (AsyncSession): _description_
 
         Returns:
             A tuple containing:
@@ -183,9 +241,14 @@ class ReportGeneratorService:
     @staticmethod    
     def build_status_intervals(observations: pd.DataFrame, now_utc: pd.Timestamp):
         """
-        Convert point observations into step-function intervals:
-        [t_i, t_{i+1}) with status_i, and last [t_last, now_utc].
-        Returns a list of dicts with 'start', 'end', 'status' (UTC tz-aware).
+            Convert point observations into step-function intervals:
+            [t_i, t_{i+1}) with status_i, and last [t_last, now_utc].
+        Args:
+            observations (pd.DataFrame): _description_
+            now_utc (pd.Timestamp): _description_
+
+        Returns:
+            Returns a list of dicts with 'start', 'end', 'status' (UTC tz-aware).
         """
         obs_df = observations.sort_values("timestamp_utc").reset_index(drop=True)
         if obs_df.empty:
@@ -214,9 +277,16 @@ class ReportGeneratorService:
     @staticmethod
     def build_bh_intervals_utc(business_hrs_df: pd.DataFrame, tz: ZoneInfo, start_utc: pd.Timestamp, end_utc: pd.Timestamp):
         """
-        Expand business hours to UTC intervals covering [start_utc, end_utc].
-        Handles overnight (end <= start → rolls to next local day).
-        Returns list of (bh_start_utc, bh_end_utc).
+            Expand business hours to UTC intervals covering [start_utc, end_utc].
+            Handles overnight (end <= start → rolls to next local day).
+        Args:
+            business_hrs_df (pd.DataFrame): _description_
+            tz (ZoneInfo): _description_
+            start_utc (pd.Timestamp): _description_
+            end_utc (pd.Timestamp): _description_
+
+        Returns:
+            Returns list of (bh_start_utc, bh_end_utc).
         """
         bh_map = {}
         for _, row in business_hrs_df.iterrows():
@@ -265,7 +335,16 @@ class ReportGeneratorService:
         - Step function carry-forward between observations
         - If no observation before window_start: back-fill from first observation at/after window_start
         - If no observations at all: return zeros
-        Returns (uptime_seconds, downtime_seconds).
+        
+        Args:
+            observations (pd.DataFrame): _description_
+            bh_df (pd.DataFrame): _description_
+            tz (ZoneInfo): _description_
+            now_utc (pd.Timestamp): _description_
+            window_td (timedelta): _description_
+
+        Returns:
+            (uptime_seconds, downtime_seconds)._
         """
         try:
             window_start = now_utc - window_td
@@ -313,8 +392,8 @@ class ReportGeneratorService:
     def summarize_results(uptime_sec, downtime_sec, window_td, units="minutes"):
         """
         Convert seconds to desired units and format.
-        For last_hour: units="minutes" (int)
-        For last_day/week: units="hours" (float, 2 decimals)
+        For last_hour: units="minutes" 
+        For last_day/week: units="hours" 
         """
         total = uptime_sec + downtime_sec
         if total == 0:
@@ -387,6 +466,12 @@ class ReportGeneratorService:
             raise  
 
     async def final_report(self,NOW_UTC:datetime,report_id:str):
+        """ 
+            Takes in MAX_UTC_TIME and report_id
+            Computes the restaurant active/inactive meterics 
+            for all stores in db 
+            Generate a csv file
+        """
         try:
             start_time=t.time()
             async with get_session_context_manager() as session:
